@@ -24,7 +24,7 @@ public class BootCoinTopic {
     public NewTopic topicWallet() {
 
         return TopicBuilder
-                .name("service-wallet-topic")
+                .name("service-bootcoin-topic")
                 .partitions(1)
                 .replicas(1)
                 .build();

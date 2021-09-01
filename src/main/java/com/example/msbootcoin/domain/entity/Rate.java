@@ -7,36 +7,25 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.Id;
-import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 import org.springframework.data.mongodb.core.mapping.Field;
 
 import java.time.LocalDateTime;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
-@Document(collection = "transactionBootCoin")
+@Document(collection = "rate")
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
 @Builder
-public class Transaction {
+public class Rate {
     @Id
     private String id;
 
     @Field(name = "amount")
-    private Double amount;
+    private Double purchaseRate;
 
-    @Field(name = "provider")
-    private String provider;
-
-    @Field(name = "statusTransaction")
-    private String statusTransaction;
-
-    @Indexed(unique = true)
-    @Field(name = "verificationCode")
-    private String verificationCode;
-
-    @Field(name = "transactionDate")
+    @Field(name = "openRate")
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd HH:mm:ss")
-    private LocalDateTime transactionDate = LocalDateTime.now();
+    private LocalDateTime openRate = LocalDateTime.now();
 }
