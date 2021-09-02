@@ -15,8 +15,12 @@ public class RouterConfig {
     @Bean
     public RouterFunction<ServerResponse> rutas(BootCoinHandler handler){
         return route(GET("/bootcoin"), handler::findAll)
+                .andRoute(GET("/transferees"),handler::findAllTransferees)
+                .andRoute(GET("/bootcoin/{phone}"), handler::findByPhone)
+                .andRoute(GET("/bootcoin/{code}"), handler::findByVerificationCode)
                 .andRoute(POST("/bootcoin/transference"), handler::transferenceBootCoinPending)
-                .andRoute(POST("/bootcoin/approved/{code}"), handler::transferenceApproved)
+                .andRoute(GET("/bootcoin/approved/{mode}/{code}"), handler::transferenceApproved)
+                .andRoute(GET("/bootcoin/approved/account"), handler::accountBootCoinApproved)
                 .andRoute(POST("/bootcoin/create"), handler::createBootCoin);
     }
 }

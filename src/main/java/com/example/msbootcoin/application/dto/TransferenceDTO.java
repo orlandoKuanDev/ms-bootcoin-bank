@@ -13,5 +13,5 @@ public class TransferenceDTO {
     private Double amount;
     private Integer amountCoin;
     private String statusTransaction;
-    private String transactionCode;
+    private String verificationCode;
 }

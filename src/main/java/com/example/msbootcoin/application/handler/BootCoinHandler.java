@@ -7,6 +7,7 @@ import com.example.msbootcoin.domain.entity.*;
 import com.example.msbootcoin.domain.service.ITransferenceService;
 import com.example.msbootcoin.infrastructure.repository.IBootCoinService;
 import com.example.msbootcoin.infrastructure.topic.producer.BootCoinProducer;
+import com.example.msbootcoin.infrastructure.util.VerificationCodeGenerator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -30,6 +31,7 @@ public class BootCoinHandler {
     private final AcquisitionService acquisitionService;
     private final TransferenceConverter transferenceConverter;
     private final ITransferenceService transferenceService;
+
     @Autowired
     public BootCoinHandler(IBootCoinService bootCoinService, BootCoinProducer bootCoinProducer, AcquisitionService acquisitionService, TransferenceConverter transferenceConverter, ITransferenceService transferenceService) {
         this.bootCoinService = bootCoinService;
@@ -43,6 +45,10 @@ public class BootCoinHandler {
         return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON)
                 .body(bootCoinService.findAll(), BootCoin.class);
     }
+    public Mono<ServerResponse> findAllTransferees(ServerRequest request) {
+        return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON)
+                .body(transferenceService.findAll(), Transference.class);
+    }
     public Mono<ServerResponse> findByVerificationCode(ServerRequest request){
         String code = request.pathVariable("code");
         return transferenceService.findByVerificationCode(code)
@@ -51,7 +57,14 @@ public class BootCoinHandler {
                         .bodyValue(p))
                 .switchIfEmpty(Mono.error(new RuntimeException("THE BOOTCOIN DOES NOT EXIST")));
     }
-
+    public Mono<ServerResponse> findByPhone(ServerRequest request){
+        String phone = request.pathVariable("phone");
+        return bootCoinService.findBootCoinByCustomer_Phone(phone)
+                .flatMap(p -> ServerResponse.ok()
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(p))
+                .switchIfEmpty(Mono.error(new RuntimeException("THE WALLET DOES NOT EXIST")));
+    }
     public Mono<Customer> createCustomer(Mono<BootCoinCreateRequestDTO> walletRequest){
         Mono<Customer> customerForConsumer = Mono.just(new Customer());
         return walletRequest
@@ -96,8 +109,14 @@ public class BootCoinHandler {
                 .onErrorResume(error -> Mono.error(new RuntimeException(error.getMessage())));
     }
 
+    /**
+     *
+     * @param request TransferenceRequestDTO
+     * @return transference
+     */
     public Mono<ServerResponse> transferenceBootCoinPending(ServerRequest request){
         Mono<TransferenceRequestDTO> transferRequest = request.bodyToMono(TransferenceRequestDTO.class);
+        log.info("test_resques, {}", transferRequest);
         return transferRequest
                 .zipWhen(transfer -> {
                     Mono<BootCoin> origenBootCoin= bootCoinService
@@ -134,7 +153,7 @@ public class BootCoinHandler {
                     transferenceDTO.setAmount(transference.getT3().getAmount());
                     transferenceDTO.setAmountCoin(transference.getT3().getAmountCoin());
                     transferenceDTO.setStatusTransaction("PENDING");
-                    transferenceDTO.setTransactionCode("A7SD4A6D");
+                    transferenceDTO.setVerificationCode(new VerificationCodeGenerator().generate("VER-",8));
                     Transference transferenceCreate = transferenceConverter.convertToEntity(transferenceDTO, new Transference());
                     return transferenceService.create(transferenceCreate);
                 })
@@ -144,22 +163,30 @@ public class BootCoinHandler {
                         .bodyValue(transference))
                 .onErrorResume(error -> Mono.error(new RuntimeException(error.getMessage())));
     }
+
+    /**
+     *
+     * @param request code verification code transference
+     * @param request mode of pay for the transference
+     * @return transference status approved
+     */
     public Mono<ServerResponse> transferenceApproved(ServerRequest request){
         String code = request.pathVariable("code");
+        String mode = request.pathVariable("mode");
         Mono<Transference> transferenceMono = transferenceService.findByVerificationCode(code);
         return transferenceMono
                 .zipWhen(dataWallet -> {
-                    log.info("origenBootCoin, {}", (dataWallet.getBuyer().getCustomer().getCustomerIdentityNumber()));
-                    log.info("destineBootCoin, {}", (dataWallet.getSeller().getCustomer().getCustomerIdentityNumber()));
+                    if(dataWallet.getStatusTransaction().equals("APPROVED")){
+                        return Mono.error(() -> new RuntimeException("your transference has already been approved"));
+                    }
                     return acquisitionService
                             .findAllByCustomer(dataWallet.getSeller().getCustomer().getCustomerIdentityNumber())
                             .collectList()
                             .flatMap(acquisitions -> {
-                                log.info("ACQUISITION_LIST, {}", acquisitions);
                                 Acquisition origen = acquisitions.stream()
-                                        .filter(acquisition -> acquisition.getProduct().getProductName().equals("BOOTCOIN"))
+                                        .filter(acquisition -> acquisition.getProduct().getProductName().equals(mode))
                                         .findFirst()
-                                        .orElse(new Acquisition());
+                                        .orElseThrow(() -> new RuntimeException(String.format("you do not have an active %s", mode)));
                                 CreateTransferenceDTO retire = new CreateTransferenceDTO();
                                 retire.setAmount(dataWallet.getAmount());
                                 retire.setAccountNumber(origen.getBill().getAccountNumber());
@@ -178,9 +205,9 @@ public class BootCoinHandler {
                             .collectList()
                             .flatMap(acquisitionsDestine -> {
                                 Acquisition destine = acquisitionsDestine.stream()
-                                        .filter(acquisition -> acquisition.getProduct().getProductName().equals("BOOTCOIN"))
+                                        .filter(acquisition -> acquisition.getProduct().getProductName().equals(mode))
                                         .findFirst()
-                                        .orElse(new Acquisition());
+                                        .orElseThrow(() -> new RuntimeException(String.format("you do not have an active %s", mode)));
                                 CreateTransferenceDTO deposit = new CreateTransferenceDTO();
                                 deposit.setAmount(dataWalletDestine.getT1().getAmount());
                                 deposit.setAccountNumber(destine.getBill().getAccountNumber());
@@ -192,37 +219,10 @@ public class BootCoinHandler {
                                 return Mono.just(deposit);
                             });
                 })
-                .flatMap(result -> {
-                    //con la cantidad calcular las gemas
-                    Double amount = result.getT1().getT1().getAmount();
-                    Integer coins = (int) Math.round(amount / 3.5);
-                    DetailsDTO detailsDTO = new DetailsDTO();
-                    detailsDTO.setAmount(amount);
-                    detailsDTO.setAmountCoin(coins);
-
-                    BootCoin seller = result.getT1().getT1().getSeller();
-                    //vendedor sumo coins
-                    seller.setAmountCoin(seller.getAmountCoin() + coins);
-                    //comprador resto coins
-                    BootCoin buyer = result.getT1().getT1().getBuyer();
-                    buyer.setAmountCoin(seller.getAmountCoin() - coins);
-                    Mono<BootCoin> sellerBootCoin= bootCoinService
-                            .update(seller)
-                            .switchIfEmpty(Mono.error(new RuntimeException("BootCoin seller does not exist")));
-                    Mono<BootCoin> buyerBootCoin= bootCoinService
-                            .update(buyer)
-                            .switchIfEmpty(Mono.error(new RuntimeException("BootCoin buyer does not exist")));
-                    Mono<DetailsDTO> report = Mono.just(detailsDTO);
-                    return Mono.zip(sellerBootCoin, buyerBootCoin, report);
-                })
                 .flatMap(transference -> {
-                    TransferenceDTO transferenceDTO = new TransferenceDTO();
-                    transferenceDTO.setSeller(transference.getT1());
-                    transferenceDTO.setBuyer(transference.getT2());
-                    transferenceDTO.setAmount(transference.getT3().getAmount());
-                    transferenceDTO.setAmountCoin(transference.getT3().getAmountCoin());
-                    Transference transferenceCreate = transferenceConverter.convertToEntity(transferenceDTO, new Transference());
-                    return transferenceService.create(transferenceCreate);
+                    Transference transference1 = transference.getT1().getT1();
+                    transference1.setStatusTransaction("APPROVED");
+                    return transferenceService.update(transference1);
                 })
                 .log()
                 .flatMap(transference -> ServerResponse.created(URI.create("/transference/".concat(transference.getId())))
@@ -230,8 +230,70 @@ public class BootCoinHandler {
                         .bodyValue(transference))
                 .onErrorResume(error -> Mono.error(new RuntimeException(error.getMessage())));
     }
+    public Mono<ServerResponse> accountBootCoinApproved(ServerRequest request){
+        Mono<TransferencePayDTO> transferencePayDTOMono = request.bodyToMono(TransferencePayDTO.class);
 
-    public Mono<ServerResponse> transferenceBootCoinApproved(ServerRequest request){
+        return transferencePayDTOMono
+                .zipWhen(transferencePayDTO ->  transferenceService.findByVerificationCode(transferencePayDTO.getVerificationCode()))
+                .zipWhen(dataWallet -> {
+                    if(dataWallet.getT2().getStatusTransaction().equals("APPROVED")){
+                        return Mono.error(() -> new RuntimeException("your transference has already been approved"));
+                    }
+                    return acquisitionService
+                            .findAllByCustomer(dataWallet.getT2().getSeller().getCustomer().getCustomerIdentityNumber())
+                            .collectList()
+                            .flatMap(acquisitions -> {
+                                Acquisition origen = acquisitions.stream()
+                                        .filter(acquisition -> acquisition.getBill().getAccountNumber().equals(dataWallet.getT1().getAccountSeller()))
+                                        .findFirst()
+                                        .orElseThrow(() -> new RuntimeException(String.format("you do not have an account active %s", dataWallet.getT1().getAccountSeller())));
+                                CreateTransferenceDTO retire = new CreateTransferenceDTO();
+                                retire.setAmount(dataWallet.getT2().getAmount());
+                                retire.setAccountNumber(origen.getBill().getAccountNumber());
+                                retire.setDescription(String.format("send money from %s to %s",
+                                        dataWallet.getT2().getSeller().getCustomer().getPhone(),
+                                        dataWallet.getT2().getBuyer().getCustomer().getPhone()));
+                                retire.setCardNumber("");
+                                log.info("RETIRE, {}", retire);
+                                bootCoinProducer.sendSaveRetireService(retire);
+                                return Mono.just(origen);
+                            });
+                })
+                .zipWhen(dataWalletDestine -> {
+                    return acquisitionService
+                            .findAllByCustomer(dataWalletDestine.getT1().getT2().getBuyer().getCustomer().getCustomerIdentityNumber())
+                            .collectList()
+                            .flatMap(acquisitionsDestine -> {
+                                Acquisition destine = acquisitionsDestine.stream()
+                                        .filter(acquisition -> acquisition.getBill().getAccountNumber().equals(dataWalletDestine.getT1().getT1().getAccountBuyer()))
+                                        .findFirst()
+                                        .orElseThrow(() -> new RuntimeException(String.format("you do not have an account active %s", dataWalletDestine.getT1().getT1().getAccountBuyer())));
+                                CreateTransferenceDTO deposit = new CreateTransferenceDTO();
+                                deposit.setAmount(dataWalletDestine.getT1().getT2().getAmount());
+                                deposit.setAccountNumber(destine.getBill().getAccountNumber());
+                                deposit.setDescription(String.format("receive money from %s to %s",
+                                        dataWalletDestine.getT1().getT2().getBuyer().getCustomer().getPhone(),
+                                        dataWalletDestine.getT1().getT2().getSeller().getCustomer().getPhone()));
+                                deposit.setCardNumber("");
+                                bootCoinProducer.sendSaveDepositService(deposit);
+                                return Mono.just(deposit);
+                            });
+                })
+                .flatMap(transference -> {
+                    Transference transference1 = transference.getT1().getT1().getT2();
+                    transference1.setStatusTransaction("APPROVED");
+                    return transferenceService.update(transference1);
+                })
+                .zipWhen(dataSeller -> bootCoinService.update(dataSeller.getSeller()))
+                .zipWhen(dataBuyer -> bootCoinService.update(dataBuyer.getT1().getBuyer()))
+                .log()
+                .flatMap(transference -> ServerResponse.created(URI.create("/transference/".concat(transference.getT1().getT1().getId())))
+                        .contentType(APPLICATION_JSON)
+                        .bodyValue(transference))
+                .onErrorResume(error -> Mono.error(new RuntimeException(error.getMessage())));
+
+    }
+    public Mono<ServerResponse> transferenceAccBootCoinApproved(ServerRequest request){
         Mono<TransferenceRequestDTO> transferRequest = request.bodyToMono(TransferenceRequestDTO.class);
         return transferRequest
                 .zipWhen(transfer -> {
@@ -302,6 +364,7 @@ public class BootCoinHandler {
                     //comprador resto coins
                     BootCoin buyer = result.getT1().getT1().getT2().getT2();
                     buyer.setAmountCoin(seller.getAmountCoin() - coins);
+
                     Mono<BootCoin> sellerBootCoin= bootCoinService
                             .update(seller)
                             .switchIfEmpty(Mono.error(new RuntimeException("BootCoin seller does not exist")));
@@ -320,10 +383,12 @@ public class BootCoinHandler {
                     Transference transferenceCreate = transferenceConverter.convertToEntity(transferenceDTO, new Transference());
                     return transferenceService.create(transferenceCreate);
                 })
+                .zipWhen(dataSeller -> bootCoinService.update(dataSeller.getSeller()))
+                .zipWhen(dataBuyer -> bootCoinService.update(dataBuyer.getT1().getBuyer()))
                 .log()
-                .flatMap(transference -> ServerResponse.created(URI.create("/transference/".concat(transference.getId())))
+                .flatMap(transference -> ServerResponse.created(URI.create("/transference/".concat(transference.getT1().getT1().getId())))
                         .contentType(APPLICATION_JSON)
-                        .bodyValue(transference))
+                        .bodyValue(transference.getT1().getT1()))
                 .onErrorResume(error -> Mono.error(new RuntimeException(error.getMessage())));
     }
 
